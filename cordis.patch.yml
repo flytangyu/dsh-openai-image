@@ -1,0 +1,9 @@
+- insert:
+    - id: tool-openai-image
+      name: dsh-openai-image
+      config:
+        model: gpt-image-2
+        apiKeyRef: OPENAI_API_KEY
+        quality: medium
+        size: 1024x1024
+        timeoutMs: 600000

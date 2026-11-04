@@ -1,0 +1,48 @@
+{
+  "name": "dsh-openai-image",
+  "version": "1.0.0",
+  "description": "OpenAI image generation for DeepSeek Harness, using its existing credentials and proxy policy",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "scripts",
+    "test"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "smoke": "node scripts/smoke-test.js"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flytangyu/dsh-openai-image.git"
+  },
+  "homepage": "https://github.com/flytangyu/dsh-openai-image#readme",
+  "bugs": {
+    "url": "https://github.com/flytangyu/dsh-openai-image/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "openai",
+    "image-generation",
+    "qqbot"
+  ]
+}
