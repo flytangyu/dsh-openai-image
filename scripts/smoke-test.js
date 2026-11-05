@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
-import { createImageTool } from '../index.js';
+import { createImageTool, createImageModelListTool } from '../index.js';
 
 let dshRoot = process.env.DSH_INSTALL_DIR;
 if (!dshRoot) {
@@ -39,20 +39,21 @@ try {
   const info = await ctx.credentials.describe('OPENAI_API_KEY');
   console.log(JSON.stringify({ credentialConfigured: info.configured, credentialSource: info.source, openaiUsesProxy: proxyRouteFor(new URL('https://api.openai.com')).proxied }));
   if (!info.configured) throw new Error('DSH OPENAI_API_KEY is not configured');
+  const modelOption = process.argv.indexOf('--model');
+  const model = modelOption < 0 ? undefined : process.argv[modelOption + 1];
+  if (modelOption >= 0 && (!model || model.startsWith('--'))) throw new Error('--model requires an image model ID');
   if (process.argv.includes('--generate')) {
     const tool = createImageTool(ctx);
     const started = Date.now();
     const result = await tool.execute({
       prompt: 'A friendly tiny blue whale robot painting a colorful picture at an easel, warm clean storybook illustration, white background, no text, square composition.',
       quality: 'low', n: 1,
+      ...(model === undefined ? {} : { model }),
     }, { signal: AbortSignal.timeout(tool.timeoutMs) });
     console.log(JSON.stringify({ elapsedSeconds: Math.round((Date.now() - started) / 1000), ...result }, null, 2));
   } else {
-    const key = (await ctx.credentials.resolve('OPENAI_API_KEY')).value;
-    const response = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(20000) });
-    const body = await response.json();
-    console.log(JSON.stringify({ status: response.status, gptImage2Listed: body.data?.some(model => model.id === 'gpt-image-2') }));
-    if (!response.ok) process.exitCode = 1;
+    const tool = createImageModelListTool(ctx);
+    console.log(JSON.stringify(await tool.execute({}, { signal: AbortSignal.timeout(tool.timeoutMs) }), null, 2));
   }
 } finally {
   await ctx.fiber.dispose();

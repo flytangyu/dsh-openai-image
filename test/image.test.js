@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, open, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { API_URL, apply, createImageTool } from '../index.js';
+import { API_URL, MODELS_URL, apply, createImageTool, createImageModelListTool } from '../index.js';
 
 // A complete 1x1 PNG, rather than an arbitrary string with a PNG extension.
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jB1sAAAAASUVORK5CYII=', 'base64');
@@ -40,12 +40,13 @@ async function harness(t, overrides = {}) {
   };
 }
 
-test('registers one usable tool with timeout and no caller-selected output path', async (t) => {
+test('registers generation and model discovery without resolving credentials', async (t) => {
   const h = await harness(t);
   const registrations = [];
   const logLines = [];
   apply({ ...h.ctx, tools: { register: tool => registrations.push(tool) }, logger: { info: line => logLines.push(line) } }, h.config);
-  assert.equal(registrations.length, 1);
+  assert.equal(registrations.length, 2);
+  assert.equal(registrations[1].name, 'list_image_models');
   const tool = registrations[0];
   assert.equal(tool.name, 'generate_image');
   assert.equal(tool.timeoutMs, 600000);
@@ -313,4 +314,85 @@ test('a partial second-image write rolls back the entire batch without deleting 
       assert.deepEqual(await readFile(existing), existingContent);
     });
   }
+});
+
+test('per-call model overrides the default without changing subsequent calls', async (t) => {
+  const h = await harness(t);
+  const requests = [];
+  h.mockFetch(async (url, options) => {
+    assert.equal(url, API_URL);
+    requests.push(JSON.parse(options.body));
+    return imageResponse();
+  });
+  const selected = await h.execute({ prompt: 'a whale', model: 'gpt-image-2.6-flare', quality: 'max' });
+  const original = await h.execute();
+  const future = await h.execute({ prompt: 'a whale', model: 'gpt-image-3.1-future' });
+  assert.equal(selected.model, 'gpt-image-2.6-flare');
+  assert.equal(requests[0].quality, 'max');
+  assert.equal(original.model, 'gpt-image-2');
+  assert.equal(requests[1].model, 'gpt-image-2');
+  assert.equal(future.model, 'gpt-image-3.1-future');
+});
+
+test('accepts the official latest alias in configuration and per-call selection', async (t) => {
+  const h = await harness(t, { model: 'chatgpt-image-latest' });
+  const models = [];
+  h.mockFetch(async (_url, options) => {
+    models.push(JSON.parse(options.body).model);
+    return imageResponse();
+  });
+  assert.equal((await h.execute()).model, 'chatgpt-image-latest');
+  assert.equal((await h.execute({ prompt: 'a whale', model: 'gpt-image-2.6-sunburst', quality: 'xhigh' })).model, 'gpt-image-2.6-sunburst');
+  assert.deepEqual(models, ['chatgpt-image-latest', 'gpt-image-2.6-sunburst']);
+});
+
+test('invalid model IDs and advanced quality on older models fail before any network call', async (t) => {
+  const h = await harness(t);
+  const fetchMock = h.mockFetch(async () => assert.fail('invalid options must not reach OpenAI'));
+  for (const model of ['', 'https://example.com', 'gpt-6.1-sol', 123]) {
+    await assert.rejects(h.execute({ prompt: 'a whale', model }), { code: 'INVALID_IMAGE_ARGUMENT' });
+  }
+  for (const model of ['gpt-image-2', 'gpt-image-2-2026-04-21', 'gpt-image-1.5']) {
+    await assert.rejects(h.execute({ prompt: 'a whale', model, quality: 'max' }), { code: 'INVALID_IMAGE_ARGUMENT' });
+  }
+  assert.equal(h.credentialCalls.length, 0);
+  assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+test('model discovery refreshes from OpenAI and respects credential rotation', async (t) => {
+  const h = await harness(t);
+  const tool = createImageModelListTool(h.ctx, h.config);
+  const keys = [];
+  const replies = [
+    ['gpt-image-2', 'gpt-6.1-sol', 'chatgpt-image-latest', 'gpt-image-2'],
+    ['gpt-image-2.6-flare', 'gpt-image-3.1-future'],
+  ];
+  h.mockFetch(async (url, options) => {
+    assert.equal(url, MODELS_URL);
+    assert.equal(options.method, 'GET');
+    assert.equal(options.body, undefined);
+    keys.push(options.headers.Authorization);
+    return Response.json({ data: [...replies.shift().map(id => ({ id })), null, {}] });
+  });
+  const exec = { signal: new AbortController().signal };
+  assert.deepEqual(await tool.execute({}, exec), {
+    default_model: 'gpt-image-2', models: ['chatgpt-image-latest', 'gpt-image-2'],
+  });
+  h.setCredential({ value: 'sk-refreshed-unit-test' });
+  assert.deepEqual(await tool.execute({}, exec), {
+    default_model: 'gpt-image-2', models: ['gpt-image-2.6-flare', 'gpt-image-3.1-future'],
+  });
+  assert.deepEqual(keys, [`Bearer ${DEFAULT_KEY}`, 'Bearer sk-refreshed-unit-test']);
+  assert.deepEqual(await readdir(h.directory), []);
+});
+
+test('model discovery rejects malformed responses and observes cancellation', async (t) => {
+  const h = await harness(t);
+  const tool = createImageModelListTool(h.ctx, h.config);
+  const fetchMock = h.mockFetch(async () => Response.json({ data: null }));
+  await assert.rejects(tool.execute({}, { signal: new AbortController().signal }), { code: 'INVALID_MODEL_RESPONSE' });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(tool.execute({}, { signal: controller.signal }), { name: 'AbortError' });
+  assert.equal(fetchMock.mock.callCount(), 1);
 });

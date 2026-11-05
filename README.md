@@ -7,6 +7,7 @@
 ## 能做什么
 
 - 文字生成照片、插画、海报、封面等图片；提示词支持中文。
+- `list_image_models` 实时发现账号可见的绘图模型，`generate_image.model` 支持每次指定模型，新模型 ID 无需发布插件升级。
 - 默认 `gpt-image-2`、`1024x1024`、`medium` 质量、PNG，每次一张。
 - 支持横图、竖图、质量、透明背景、PNG/JPEG/WebP 和一次 1–4 张。
 - 返回图片文件路径，适配 DSH 网页展示与 QQ 发图。
@@ -57,6 +58,39 @@ dsh web
 
 支持工具调用的 DeepSeek、OpenAI 等聊天模型都可以调用 `generate_image`。输出默认保存在 `$DSH_HOME/generated-images`，没有设置 `DSH_HOME` 时为 `~/.dsh/generated-images`。
 
+## 动态模型与单次指定（v1.1.0）
+
+在 DSH 网页或 QQ 中可以直接说：
+
+> 列出我现在可以使用的 OpenAI 绘图模型。
+
+模型会调用 `list_image_models`，使用当前 DSH 保存的 Key 实时查询 OpenAI `/v1/models`，返回 `gpt-image-*` 和 `chatgpt-image-latest`。每次查询重新读取目录和凭据，不缓存旧列表。这个查询不会生成图片。
+
+接着可以说：
+
+> 用 gpt-image-2.6-flare 画一只水彩鲸鱼，横图。
+
+> 用 gpt-image-2.6-sunburst，high 质量，生成一张森林插画。
+
+> 用 chatgpt-image-latest 画一个机器人头像。
+
+调用参数示例：
+
+```json
+{
+  "prompt": "一只在海边看日落的小鲸鱼，水彩插画",
+  "model": "gpt-image-2.6-flare",
+  "size": "1536x1024",
+  "quality": "high"
+}
+```
+
+优先级为**本次调用的 `model` > 插件配置的 `model` > 内置默认 `gpt-image-2`**。本次选择不改变后续调用的默认模型。API 返回错误时不自动换模型，用户可以根据错误决定是否重试。
+
+希望由 OpenAI 的 latest 别名选择模型时，可将插件配置中的 `model` 设为 `chatgpt-image-latest`；该别名实际指向由 OpenAI 控制。插件不把未来模型名称写成固定枚举。
+
+新模型可以直接使用已有 PNG/JPEG/WebP 生成流程。模型目录仅提供账号可见的 ID，不包含完整的参数能力，具体生成权限和未来模型参数由 OpenAI 校验。`xhigh`、`max` 在工具参数中可选，已知旧模型（1.x、2）会在请求前拒绝这些档位。动态模型发现不等于自动接入新输出协议，SVG、GIF、参考图编辑仍需单独实现。
+
 ## 在 QQ 中使用
 
 本插件负责出图。通过 QQ 使用，还需要另外安装并配置 [`@tencent-connect/dsh-qqbot`](https://github.com/tencent-connect/dsh-qqbot)。
@@ -93,9 +127,10 @@ node -e 'console.log(require("node:path").resolve(process.env.DSH_HOME || requir
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
+| `model` | 插件默认模型 | 本次调用的准确模型 ID，可先调用 `list_image_models` 查询 |
 | `prompt` | 必填 | 1–32000 字符；描述主体、风格、构图和需要出现在图中的文字 |
 | `size` | `1024x1024` | `1024x1024`、`1536x1024`、`1024x1536`、`auto` |
-| `quality` | `medium` | `low`、`medium`、`high`、`auto` |
+| `quality` | `medium` | `low`、`medium`、`high`、`xhigh`、`max`、`auto`；支持情况取决于模型 |
 | `n` | `1` | 1–4 张，同一个提示词的多个结果 |
 | `output_format` | `png` | `png`、`jpeg`、`webp` |
 | `background` | `auto` | `auto`、`opaque`、`transparent`；透明背景不能使用 JPEG |
@@ -143,7 +178,7 @@ node -e 'console.log(require("node:path").resolve(process.env.DSH_HOME || requir
     # outputDirectory: /absolute/path/to/generated-images
 ```
 
-`apiKeyRef` 是凭据引用名称；每次调用重新读取，Key 更新后无需重启插件。`model` 支持配置其他 `gpt-image-*` 模型，实际可用性和参数支持取决于 OpenAI 账号和模型。`timeoutMs` 范围为 1000–1800000 毫秒。
+`apiKeyRef` 是凭据引用名称；每次调用重新读取，Key 更新后无需重启插件。`model` 支持配置其他 `gpt-image-*` 模型，实际可用性和参数支持取决于 OpenAI 账号和模型。也支持 `chatgpt-image-latest`。`timeoutMs` 范围为 1000–1800000 毫秒。
 
 输出目录必须是专用目录的绝对真实路径，不能通过符号链接指向其他目录。
 
@@ -166,13 +201,16 @@ NO_PROXY=localhost,127.0.0.1,::1,deepseek.com,deepseek.cn,qq.com
 
 ```bash
 npm test                     # 本地模拟测试，不请求外网，不消耗 API 额度
-npm run smoke                # 使用本机 DSH 凭据服务检查模型列表，不生成图片
-npm run smoke -- --generate  # 真实生成一张 low 质量测试图，会使用 API 额度
+npm run smoke                # 通过 list_image_models 实时查询模型，不生成图片
+npm run smoke -- --generate  # 使用默认模型真实生成一张 low 质量测试图，会使用 API 额度
+npm run smoke -- --generate --model gpt-image-2.6-flare  # 指定模型验证
 ```
 
 Smoke 脚本从 PATH 中的 `dsh` 查找运行库。特殊安装可以设置 `DSH_INSTALL_DIR` 为 DSH npm 包目录；该目录下应有 package.json，且能解析 DSH 的运行时依赖。脚本不会自动向 QQ 发送图片。
 
-目前 31 项本地测试覆盖请求参数、凭据更新、错误脱敏、取消、无效图片响应、文件权限、写盘失败清理和原图不被覆盖。已完成真实 API 出图及 DSH/QQ 接入验证；仓库测试不要求提供 API Key。
+目前 36 项本地测试覆盖请求参数、模型实时刷新、单次模型选择、凭据更新、错误脱敏、取消、无效图片响应、文件权限、写盘失败清理和原图不被覆盖。已完成真实 API 出图及 DSH/QQ 接入验证；仓库测试不要求提供 API Key。
+
+v1.1.0 验证补充（2026-11-05）：已通过 DSH 工具注册及真实账号模型目录查询，目录包含 2.6 Flare/Sunburst。一次指定 2.6 Flare 的真实出图联调遇到传输连接中断，因此本次尚未完成 2.6 成功出图验收。单次模型覆盖、请求参数及后续默认模型保持正确已通过模拟测试。
 
 ## 常见问题
 
